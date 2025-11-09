@@ -6,12 +6,16 @@ const config = require('./config.json');
 // Para Render (producción): '/data/tribunal.db'
 // Para pruebas locales (en tu PC): './tribunal.db'
 const dbPath = process.env.NODE_ENV === 'production' ? '/data/tribunal.db' : './tribunal.db';
-const db = new sqlite3.Database(dbPath);
+const db = new sqlite3.Database(dbPath, (err) => {
+  if (err) {
+    console.error("Error abriendo la base de datos:", err.message);
+  } else {
+    console.log(`Base de datos conectada en: ${dbPath}`);
+  }
+});
 
 /*
  * UTILERÍAS DE BASE DE DATOS (Promesas)
- * sqlite3 usa callbacks, pero nosotros queremos usar async/await.
- * Estas funciones "envuelven" los comandos de la DB en Promesas.
 */
 function dbRun(query, params = []) {
   return new Promise((resolve, reject) => {
@@ -40,8 +44,6 @@ function dbAll(query, params = []) {
   });
 }
 
-// --- FUNCIÓN DE INICIALIZACIÓN ---
-
 /**
  * Revuelve un array (algoritmo Fisher-Yates)
  */
@@ -55,25 +57,21 @@ function shuffle(array) {
 
 /**
  * Crea las tablas y las llena si están vacías.
- * Esta es la función clave de "arranque" y orden secreto.
  */
 async function setupTables() {
   console.log('Inicializando la base de datos...');
   
-  // 1. Tabla de Estado (fase, turno, etc.)
   await dbRun(`CREATE TABLE IF NOT EXISTS estado (
     key TEXT PRIMARY KEY,
     value TEXT
   )`);
 
-  // 2. Tabla de Candidatos (puntos)
   await dbRun(`CREATE TABLE IF NOT EXISTS candidatos (
     user_id TEXT PRIMARY KEY,
     puntos INTEGER DEFAULT 0,
     votos_favor_originales INTEGER DEFAULT 0
   )`);
 
-  // 3. Tabla de Votantes (orden y estado de voto)
   await dbRun(`CREATE TABLE IF NOT EXISTS votantes (
     user_id TEXT PRIMARY KEY,
     orden_turno INTEGER UNIQUE,
@@ -82,27 +80,29 @@ async function setupTables() {
     voto_favor_a TEXT,
     voto_contra_a TEXT
   )`);
+  
+  // ¡NUEVO! Tabla para Muerte Súbita
+  await dbRun(`CREATE TABLE IF NOT EXISTS desempate_votos (
+    votante_id TEXT PRIMARY KEY,
+    voto_a TEXT
+  )`);
 
-  // 4. Llenar las tablas (SOLO SI ESTÁN VACÍAS)
   const votanteCount = await dbGet('SELECT COUNT(*) as count FROM votantes');
   
   if (votanteCount.count === 0) {
     console.log('Base de datos vacía. Configurando votantes y candidatos...');
     
-    // Insertar estado inicial
-    await dbRun("INSERT INTO estado (key, value) VALUES ('fase', 'votacion')");
-    await dbRun("INSERT INTO estado (key, value) VALUES ('turno_actual_index', '1')"); // Empezamos en el turno 1
+    await dbRun("REPLACE INTO estado (key, value) VALUES ('fase', 'votacion')");
+    await dbRun("REPLACE INTO estado (key, value) VALUES ('turno_actual_index', '1')");
 
-    // Insertar candidatos
     const candidateInserts = config.candidatos.map(id => 
       dbRun('INSERT INTO candidatos (user_id) VALUES (?)', [id])
     );
     await Promise.all(candidateInserts);
 
-    // Insertar votantes con ORDEN SECRETO
-    const votantesSorteados = shuffle([...config.votantes]); // Copia y revuelve
+    const votantesSorteados = shuffle([...config.votantes]);
     const votanteInserts = votantesSorteados.map((id, index) => {
-      const orden = index + 1; // 1-based index
+      const orden = index + 1;
       return dbRun('INSERT INTO votantes (user_id, orden_turno) VALUES (?, ?)', [id, orden]);
     });
     await Promise.all(votanteInserts);
@@ -113,7 +113,7 @@ async function setupTables() {
   }
 }
 
-// --- FUNCIONES DE "GETTER" (Obtener datos) ---
+// --- GETTERS ---
 
 async function getFase() {
   const row = await dbGet("SELECT value FROM estado WHERE key = 'fase'");
@@ -134,14 +134,13 @@ async function getVotanteEstado(userId) {
 }
 
 async function getPuntuaciones() {
-  // Devuelve la tabla de puntuaciones (ej. para el recuento)
   return dbAll('SELECT * FROM candidatos ORDER BY puntos DESC, votos_favor_originales DESC');
 }
 
-// --- FUNCIONES DE "SETTER" (Modificar datos) ---
+// --- SETTERS ---
 
 async function setFase(fase) {
-  return dbRun("UPDATE estado SET value = ? WHERE key = 'fase'", [fase]);
+  return dbRun("REPLACE INTO estado (key, value) VALUES ('fase', ?)", [fase]);
 }
 
 async function setTurnoActualIndex(index) {
@@ -149,10 +148,8 @@ async function setTurnoActualIndex(index) {
 }
 
 async function setVoto(votanteId, tipo, candidatoId) {
-  // tipo debe ser 'favor' o 'contra'
   const campo_ha_votado = tipo === 'favor' ? 'ha_votado_favor' : 'ha_votado_contra';
   const campo_voto_a = tipo === 'favor' ? 'voto_favor_a' : 'voto_contra_a';
-
   return dbRun(`UPDATE votantes SET ${campo_ha_votado} = 1, ${campo_voto_a} = ? WHERE user_id = ?`, [candidatoId, votanteId]);
 }
 
@@ -161,11 +158,37 @@ async function addPuntos(candidatoId, puntos) {
 }
 
 async function addVotosFavorOriginales(candidatoId) {
-  // Para el desempate 2.0
   return dbRun('UPDATE candidatos SET votos_favor_originales = votos_favor_originales + 1 WHERE user_id = ?', [candidatoId]);
 }
 
-// Exportamos todas las funciones que usará el bot
+// --- ¡NUEVAS FUNCIONES DE DESEMPATE! ---
+
+async function getCandidatosDesempate() {
+  const row = await dbGet("SELECT value FROM estado WHERE key = 'candidatos_desempate'");
+  return row ? JSON.parse(row.value) : [];
+}
+
+async function setCandidatosDesempate(candidatosIds) {
+  const json = JSON.stringify(candidatosIds);
+  return dbRun("REPLACE INTO estado (key, value) VALUES ('candidatos_desempate', ?)", [json]);
+}
+
+async function haVotadoDesempate(votanteId) {
+  const row = await dbGet('SELECT 1 FROM desempate_votos WHERE votante_id = ?', [votanteId]);
+  return !!row;
+}
+
+async function addVotoDesempate(votanteId, candidatoId) {
+  // Añadimos el voto y también +1 punto al candidato en la tabla principal
+  await dbRun('INSERT INTO desempate_votos (votante_id, voto_a) VALUES (?, ?)', [votanteId, candidatoId]);
+  return addPuntos(candidatoId, 1); // El voto de desempate da +1
+}
+
+async function getResultadosDesempate() {
+  // Cuenta los votos de la muerte súbita
+  return dbAll('SELECT voto_a, COUNT(*) as votos FROM desempate_votos GROUP BY voto_a ORDER BY votos DESC');
+}
+
 module.exports = {
   setupTables,
   getFase,
@@ -177,5 +200,11 @@ module.exports = {
   getPuntuaciones,
   setVoto,
   addPuntos,
-  addVotosFavorOriginales
+  addVotosFavorOriginales,
+  // ---
+  getCandidatosDesempate,
+  setCandidatosDesempate,
+  haVotadoDesempate,
+  addVotoDesempate,
+  getResultadosDesempate
 };
