@@ -3,10 +3,13 @@ const cron = require('node-cron');
 const { 
   getTurnoActualIndex, getVotantePorTurno, getPuntuaciones, 
   setTurnoActualIndex, getFase, setFase,
-  setCandidatosDesempate, getResultadosDesempate
+  setCandidatosDesempate, getResultadosDesempate, getPuntuaciones // Importa todo lo necesario
 } = require('./database.js');
 const config = require('./config.json');
 
+/**
+ * Genera un string de la tabla de puntuaciones.
+ */
 async function generarTablaPuntuaciones() {
   const puntuaciones = await getPuntuaciones();
   let tabla = "📊 **RECUENTO DE VOTOS** 📊\n";
@@ -16,21 +19,28 @@ async function generarTablaPuntuaciones() {
     tabla = "Aún no hay votos registrados.";
   } else {
     puntuaciones.forEach((candidato, index) => {
+      // Usamos 'puntos::text' para castear a string si es necesario (buena práctica en PG)
       tabla += `**${index + 1}.** <@${candidato.user_id}>: **${candidato.puntos}** puntos\n`;
     });
   }
   return tabla;
 }
 
+/**
+ * Cierra un turno, quita permisos y postea el recuento.
+ */
 async function cerrarTurno(client, canal) {
   const fase = await getFase();
   if (fase !== 'votacion') return;
+
   const turnoIndex = await getTurnoActualIndex();
   const votante = await getVotantePorTurno(turnoIndex);
   
   if (votante) {
     try {
-      await canal.permissionOverwrites.edit(votante.user_id, { SendMessages: false });
+      await canal.permissionOverwrites.edit(votante.user_id, {
+        SendMessages: false
+      });
       console.log(`Permisos quitados a ${votante.user_id}`);
     } catch (e) {
       console.error(`Error quitando permisos a ${votante.user_id}: ${e.message}`);
@@ -45,6 +55,9 @@ async function cerrarTurno(client, canal) {
   console.log(`Recuento del turno ${turnoIndex} posteado.`);
 }
 
+/**
+ * Inicia un nuevo turno, da permisos y anuncia.
+ */
 async function iniciarTurno(client, canal, nuevoTurnoIndex) {
   const fase = await getFase();
   if (fase !== 'votacion') return;
@@ -63,7 +76,9 @@ async function iniciarTurno(client, canal, nuevoTurnoIndex) {
   }
 
   try {
-    await canal.permissionOverwrites.edit(votante.user_id, { SendMessages: true });
+    await canal.permissionOverwrites.edit(votante.user_id, {
+      SendMessages: true
+    });
     await canal.permissionOverwrites.edit(config.guildId, {
       SendMessages: false,
       AddReactions: true
@@ -77,6 +92,9 @@ async function iniciarTurno(client, canal, nuevoTurnoIndex) {
   console.log(`Turno ${nuevoTurnoIndex} iniciado para ${votante.user_id}.`);
 }
 
+/**
+ * Lógica de finalización con desempate
+ */
 async function finalizarVotacion(client, canal) {
   console.log('Finalizando votación principal...');
   const puntuaciones = await getPuntuaciones();
@@ -156,25 +174,28 @@ async function finalizarDesempate(client, canal) {
 
   if (resultados.length === 0) {
     await canal.send("Nadie votó en el desempate. Se usará el número de votos `/favor` originales para desempatar.");
-    // (Implementar lógica de Error Punto 3)
+    // (Lógica Error Punto 3)
     return;
   }
 
   if (resultados.length > 1 && resultados[0].votos === resultados[1].votos) {
     await canal.send("Increíblemente, ¡HAY OTRO EMPATE! El ganador se decidirá por los votos `/favor` originales.");
-    // (Implementar lógica de Error Punto 3)
+    // (Lógica Error Punto 3)
     return;
   }
 
   const ganadoresPrincipales = puntuaciones.slice(0, 3);
   const ganadorId = resultados[0].voto_a;
   const ganadorPuntos = resultados[0].votos;
+  
+  // Usamos fetch para obtener el tag del usuario si no está en caché
+  const ganadorUser = await client.users.fetch(ganadorId);
 
   let anuncio = "Los 4 nuevos administradores son:\n";
   ganadoresPrincipales.forEach((g, i) => {
     anuncio += `**${i+1}.** <@${g.user_id}> con **${g.puntos}** puntos\n`;
   });
-  anuncio += `**4.** <@${ganadorId}> (Ganador de la Muerte Súbita con ${ganadorPuntos} votos)\n`;
+  anuncio += `**4.** <@${ganadorUser.id}> (Ganador de la Muerte Súbita con ${ganadorPuntos} votos)\n`;
   
   await canal.send(anuncio);
 }
@@ -214,30 +235,31 @@ function startScheduler(client) {
   console.log(`Cron jobs configurados en zona horaria: ${zonaHoraria}`);
 }
 
-// --- FUNCIÓN DE INICIO ESPECIAL (HOY 9 PM) ---
+// --- ¡FUNCIÓN CORREGIDA PARA EL INICIO ESPECIAL! ---
 async function startTurno1Hoy(client) {
-  const ahora = new Date();
-  const horaInicio = new Date();
+  const zonaHoraria = "America/Santiago"; // ¡Asegúrate que sea la tuya!
   
-  // ¡¡CAMBIADO A LAS 9 PM (21:00)!!
-  horaInicio.setHours(21, 0, 0, 0); // 21:00:00.000
+  // Obtenemos la fecha actual en la zona horaria correcta
+  const ahoraStr = new Date().toLocaleString("en-US", { timeZone: zonaHoraria });
+  const ahora = new Date(ahoraStr);
+  
+  const dia = ahora.getDate();
+  const mes = ahora.getMonth() + 1; // getMonth() es 0-11
+  
+  // Programar el job para las 21:00 (9 PM) del día de HOY.
+  // Formato: (Minuto Hora Día Mes *)
+  const cronTime = `0 21 ${dia} ${mes} *`;
+  console.log(`Programando Turno 1 especial para las 9 PM (21:00) de hoy (${cronTime}) en ${zonaHoraria}`);
 
-  const msHastaLas9 = horaInicio.getTime() - ahora.getTime();
-
-  if (msHastaLas9 <= 0) {
-    console.log('Ya pasaron las 9 PM. Inicia manualmente si es necesario o espera al cron de las 12 AM.');
-    return;
-  }
-
-  console.log(`Turno 1 programado para las 9 PM. Faltan ${msHastaLas9 / 1000} segundos.`);
-
-  setTimeout(async () => {
-    console.log('¡INICIANDO TURNO 1 ESPECIAL!');
+  const cronJob = cron.schedule(cronTime, async () => {
+    console.log('¡INICIANDO TURNO 1 ESPECIAL (9 PM)!');
     const canalVotacion = await client.channels.fetch(config.canalVotacion);
     if (!canalVotacion) {
       console.error('No se encontró el canal para iniciar el Turno 1.');
+      cronJob.stop(); // Detener para no reintentar
       return;
     }
+    
     const fase = await getFase();
     const turnoIndex = await getTurnoActualIndex();
 
@@ -248,7 +270,15 @@ async function startTurno1Hoy(client) {
     } else {
       console.log('El turno 1 ya parece haber iniciado o la fase no es correcta.');
     }
-  }, msHastaLas9);
+    
+    // Detenemos el job para que no se ejecute el próximo año
+    cronJob.stop();
+    console.log('Cron job del Turno 1 especial detenido.');
+    
+  }, {
+    timezone: zonaHoraria,
+    scheduled: true
+  });
 }
 
 module.exports = { startScheduler, startTurno1Hoy };
