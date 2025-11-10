@@ -4,6 +4,21 @@ const path = require('path');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 require('dotenv').config();
 
+// 1. Importa el módulo HTTP
+const http = require('http');
+
+// 2. Crea un servidor básico
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot está despierto y funcionando.\n');
+});
+
+// 3. Haz que el servidor escuche. Render te da el puerto en una variable de entorno.
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Servidor HTTP escuchando en el puerto ${PORT}`);
+});
+
 // Creamos el Cliente de Discord
 const client = new Client({
   intents: [

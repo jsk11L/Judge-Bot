@@ -3,7 +3,7 @@ const { setupTables, getFase, getTurnoActualIndex } = require('../database.js');
 const { startScheduler, startTurno1Hoy } = require('../scheduler.js');
 
 module.exports = {
-  name: 'ready',
+  name: 'clientReady',
   once: true,
   async execute(client) {
     // 1. Preparar la base de datos
