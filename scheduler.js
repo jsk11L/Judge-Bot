@@ -259,7 +259,7 @@ function startScheduler(client) {
   // 1. AJUSTA ESTA HORA Y MINUTO
   // (Debe ser unos minutos en el futuro, usando la hora de 'America/Santiago')
   const HORA_PARCHE = 16; 
-  const MINUTO_PARCHE = 35; // Ej: Si son las 16:32, pon 16 y 35
+  const MINUTO_PARCHE = 54; // Ej: Si son las 16:32, pon 16 y 35
 
   console.log(`[PARCHE] Programando ejecución de parche única para las ${HORA_PARCHE}:${MINUTO_PARCHE}`);
 
