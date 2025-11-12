@@ -252,6 +252,60 @@ function startScheduler(client) {
   }, cronOptions);
   
   console.log(`Cron jobs configurados en zona horaria: ${zonaHoraria}`);
+  // ================================================
+  // --- PARCHE TEMPORAL (EJECUTAR AHORA Y BORRAR) ---
+  // ================================================
+
+  // 1. AJUSTA ESTA HORA Y MINUTO
+  // (Debe ser unos minutos en el futuro, usando la hora de 'America/Santiago')
+  const HORA_PARCHE = 16; 
+  const MINUTO_PARCHE = 35; // Ej: Si son las 16:32, pon 16 y 35
+
+  console.log(`[PARCHE] Programando ejecución de parche única para las ${HORA_PARCHE}:${MINUTO_PARCHE}`);
+
+  const parcheJob = cron.schedule(`${MINUTO_PARCHE} ${HORA_PARCHE} * * *`, async () => {
+    console.log('[PARCHE] ¡Ejecutando parche del turno de las 16:00!');
+    
+    try {
+      const canalVotacion = await client.channels.fetch(config.canalVotacion);
+      if (!canalVotacion) {
+          console.error('[PARCHE] No se encontró el canal de votación.');
+          parcheJob.stop();
+          return;
+      }
+
+      const fase = await getFase();
+      if (fase !== 'votacion') {
+          console.log('[PARCHE] La fase no es "votacion", no se hace nada.');
+          parcheJob.stop();
+          return;
+      }
+      
+      const turnoActual = await getTurnoActualIndex();
+      
+      console.log(`[PARCHE] Cerrando turno ${turnoActual} (el que debió cerrar a las 16:00)`);
+      await cerrarTurno(client, canalVotacion); // Llama a la función que ya existe en el archivo
+      
+      console.log(`[PARCHE] Iniciando turno ${turnoActual + 1}`);
+      await iniciarTurno(client, canalVotacion, turnoActual + 1); // Llama a la función que ya existe
+      
+      console.log('[PARCHE] Parche ejecutado con éxito.');
+    
+    } catch (err) {
+      console.error('[PARCHE] Error ejecutando el parche:', err);
+    } finally {
+      // 5. ¡MUY IMPORTANTE! Detener el job para que no se ejecute mañana.
+      parcheJob.stop();
+      console.log('[PARCHE] El cron job del parche ha sido detenido y no volverá a ejecutarse.');
+    }
+    
+  }, {
+    timezone: zonaHoraria, // Usa la misma zona horaria del scheduler
+    scheduled: true
+  });
+  // ================================================
+  // --- FIN DEL PARCHE ---
+  // ================================================
 }
 
 // --- ¡FUNCIÓN CORREGIDA PARA EL INICIO ESPECIAL! ---
